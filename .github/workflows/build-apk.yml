@@ -24,13 +24,17 @@ jobs:
           distribution: 'temurin'
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: |
+          npm ci || npm install
+          npm install @capacitor/android
 
       - name: Build Web Assets
         run: npm run build
 
-      - name: Sync Capacitor
-        run: npx cap sync android
+      - name: Add and Sync Capacitor Android
+        run: |
+          npx cap add android || true
+          npx cap sync android
 
       - name: Build Android APK
         run: |
