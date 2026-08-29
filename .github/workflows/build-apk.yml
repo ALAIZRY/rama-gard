@@ -23,7 +23,7 @@ jobs:
         run: npx vite build || npm run build -- --emptyOutDir || true
 
       - name: Sync Capacitor
-        run: npx cap sync android || true
+        run: npx cap sync android
 
       - name: Setup Java
         uses: actions/setup-java@v4
