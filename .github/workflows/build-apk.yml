@@ -26,13 +26,14 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci || npm install
-          npm install @capacitor/android
+          npm install @capacitor/core @capacitor/cli @capacitor/android
 
       - name: Build Web Assets
         run: npm run build
 
-      - name: Add and Sync Capacitor Android
+      - name: Init and Add Capacitor Android
         run: |
+          npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
           npx cap add android || true
           npx cap sync android
 
