@@ -28,6 +28,18 @@ jobs:
           npm ci || npm install
           npm install @capacitor/core @capacitor/cli @capacitor/android
 
+      - name: Stabilize Android camera scanner
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/components/CameraBarcodeScanner.tsx')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace("}, [isOpen, selectedDeviceId]);", "}, [isOpen]);")
+          s = s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;", "const hasNativeBarcodeDetector = 'BarcodeDetector' in window && !(window as any).Capacitor;")
+          p.write_text(s, encoding='utf-8')
+          print('Camera scanner Android lifecycle/fallback patch applied')
+          PY
+
       - name: Build Web Assets
         run: npm run build
 
