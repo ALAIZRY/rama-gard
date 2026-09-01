@@ -59,7 +59,7 @@ jobs:
           rm -rf android
           npx cap add android
           npx cap sync android
-      - name: Add camera permissions
+      - name: Add camera permissions and Android minimum SDK
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -69,6 +69,18 @@ jobs:
           additions='    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n'
           if 'android.permission.CAMERA' not in s: s=s.replace(marker,marker+additions)
           p.write_text(s,encoding='utf-8')
+          gradle=Path('android/variables.gradle')
+          if gradle.exists():
+            g=gradle.read_text(encoding='utf-8')
+            import re
+            g=re.sub(r'minSdkVersion\s*=\s*\d+', 'minSdkVersion = 26', g)
+            gradle.write_text(g,encoding='utf-8')
+          appgradle=Path('android/app/build.gradle')
+          if appgradle.exists():
+            g=appgradle.read_text(encoding='utf-8')
+            import re
+            g=re.sub(r'minSdkVersion\s+\d+', 'minSdkVersion 26', g)
+            appgradle.write_text(g,encoding='utf-8')
           PY
       - name: Build APK
         run: |
