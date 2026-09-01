@@ -1,0 +1,83 @@
+name: Build Android APK - Barcode Print V3
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Install dependencies
+        run: |
+          npm ci || npm install
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/share @capacitor/filesystem
+      - name: Fix barcode scanner for Android WebView
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/components/CameraBarcodeScanner.tsx')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace('}, [isOpen, selectedDeviceId]);','}, [isOpen]);')
+          s=s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;","const hasNativeBarcodeDetector = false;")
+          s=s.replace('hints.set(DecodeHintType.TRY_HARDER, false);','hints.set(DecodeHintType.TRY_HARDER, true);')
+          s=s.replace('reader.timeBetweenDecodingAttempts = 40;','reader.timeBetweenDecodingAttempts = 80;')
+          start=s.index('        // 5. High-Speed Detection Engine Selection')
+          end=s.index('      }\n    } catch (err: any) {', start)
+          block='''        // Android WebView: use ZXing only. Native BarcodeDetector can expose the camera but silently return no detections.\n        if (!codeReaderRef.current) {\n          codeReaderRef.current = createConfiguredReader();\n        }\n        const codeReader = codeReaderRef.current;\n        if (isScanningRef.current && videoRef.current) {\n          try {\n            const controls = codeReader.decodeFromVideoElement(\n              videoRef.current,\n              (result) => {\n                if (!isScanningRef.current || !result) return;\n                const text = result.getText();\n                if (text) handleBarcodeSuccess(text);\n              }\n            );\n            Promise.resolve(controls).catch((e) => console.warn('ZXing decoder stopped:', e));\n          } catch (decodeErr) {\n            console.error('ZXing decoder initialization failed:', decodeErr);\n            setError('تم تشغيل الكاميرا ولكن تعذر تشغيل قارئ الباركود. اضغط إعادة المحاولة.');\n          }\n        }\n'''
+          s=s[:start]+block+s[end:]
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Fix report PDF layout for Android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/utils/pdfUtils.ts')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace('windowWidth: 1200,','windowWidth: 1024,')
+          s=s.replace("pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }","pagebreak: { mode: ['css', 'legacy'] }")
+          needle='          // 2. Process all <style> tags in cloned document'
+          inject='''          // Keep the printed report geometry stable and RTL, instead of using the phone\n          // responsive width. This prevents shifted columns and broken table layout.\n          if (targetEl) {\n            targetEl.setAttribute('dir', 'rtl');\n            targetEl.style.direction = 'rtl';\n            targetEl.style.width = '1024px';\n            targetEl.style.maxWidth = '1024px';\n            targetEl.style.minWidth = '1024px';\n            targetEl.style.fontFamily = 'Arial, Tahoma, sans-serif';\n          }\n          clonedDoc.querySelectorAll<HTMLElement>('table').forEach((table) => {\n            table.style.width = '100%';\n            table.style.maxWidth = '100%';\n            table.style.tableLayout = 'fixed';\n            table.style.direction = 'rtl';\n            table.style.borderCollapse = 'collapse';\n          });\n          clonedDoc.querySelectorAll<HTMLElement>('th, td').forEach((cell) => {\n            cell.style.boxSizing = 'border-box';\n            cell.style.wordBreak = 'normal';\n            cell.style.overflowWrap = 'break-word';\n            cell.style.verticalAlign = 'middle';\n          });\n\n          // 2. Process all <style> tags in cloned document'''
+          if needle in s: s=s.replace(needle,inject)
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Build web
+        run: npm run build
+      - name: Init Capacitor
+        run: npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
+      - name: Generate clean Android project
+        run: |
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+      - name: Add camera permissions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('android/app/src/main/AndroidManifest.xml')
+          s=p.read_text(encoding='utf-8')
+          marker='<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+          additions='    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n'
+          if 'android.permission.CAMERA' not in s: s=s.replace(marker,marker+additions)
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rama-gard-v3
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
