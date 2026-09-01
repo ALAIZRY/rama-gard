@@ -11,23 +11,19 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Set up Java JDK
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-
       - name: Install dependencies
         run: |
           npm ci || npm install
           npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/share @capacitor/filesystem
-
       - name: Stabilize Android camera scanner
         run: |
           python3 - <<'PY'
@@ -37,57 +33,49 @@ jobs:
           s = s.replace("}, [isOpen, selectedDeviceId]);", "}, [isOpen]);")
           s = s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;", "const hasNativeBarcodeDetector = 'BarcodeDetector' in window && !(window as any).Capacitor;")
           p.write_text(s, encoding='utf-8')
-          print('Camera scanner Android lifecycle/fallback patch applied')
           PY
-
       - name: Fix Android export and print handlers
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
-          # Excel: XLSX.writeFile() relies on browser downloads, which are unreliable in Capacitor WebView.
-          # Save the generated workbook natively, then open Android's share/save sheet.
           p = Path('src/utils/excelUtils.ts')
           s = p.read_text(encoding='utf-8')
           if "@capacitor/share" not in s:
               s = s.replace("import { formatRawBarcode } from './unitUtils';", "import { formatRawBarcode } from './unitUtils';\nimport { Filesystem, Directory } from '@capacitor/filesystem';\nimport { Share } from '@capacitor/share';\nimport { Capacitor } from '@capacitor/core';")
           marker = "const formatExcelDate = (val: any): string => {"
-          helper = '''const saveWorkbookFile = async (workbook: XLSX.WorkBook, fileName: string): Promise<void> => {\n  if (!Capacitor.isNativePlatform()) {\n    XLSX.writeFile(workbook, fileName);\n    return;\n  }\n  const base64 = XLSX.write(workbook, { bookType: 'xlsx', type: 'base64' });\n  const result = await Filesystem.writeFile({\n    path: fileName,\n    data: base64,\n    directory: Directory.Cache\n  });\n  await Share.share({\n    title: fileName,\n    text: 'ملف Excel من تطبيق راما جارد',\n    url: result.uri,\n    dialogTitle: 'حفظ أو مشاركة ملف Excel'\n  });\n};\n\n'''
+          helper = '''const saveWorkbookFile = async (workbook: XLSX.WorkBook, fileName: string): Promise<void> => {\n  if (!Capacitor.isNativePlatform()) {\n    XLSX.writeFile(workbook, fileName);\n    return;\n  }\n  const base64 = XLSX.write(workbook, { bookType: 'xlsx', type: 'base64' });\n  const result = await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache });\n  await Share.share({ title: fileName, text: 'ملف Excel من تطبيق راما جارد', url: result.uri, dialogTitle: 'حفظ أو مشاركة ملف Excel' });\n};\n\n'''
           if 'const saveWorkbookFile = async' not in s:
               s = s.replace(marker, helper + marker)
           s = s.replace('export const exportItemsToExcel = (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {', 'export const exportItemsToExcel = async (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {')
           s = s.replace('export const exportAuditSessionToExcel = (session: AuditSession, fileName?: string) => {', 'export const exportAuditSessionToExcel = async (session: AuditSession, fileName?: string) => {')
           s = s.replace('export const exportAllSessionsToExcel = (sessions: AuditSession[], fileName?: string) => {', 'export const exportAllSessionsToExcel = async (sessions: AuditSession[], fileName?: string) => {')
-          s = s.replace('XLSX.writeFile(workbook, fileName);', 'await saveWorkbookFile(workbook, fileName);')
-          s = s.replace('XLSX.writeFile(workbook, name);', 'await saveWorkbookFile(workbook, name);')
+          # Replace only the original export calls, not the helper fallback.
+          helper_end = s.find('};', s.find('const saveWorkbookFile = async'))
+          head, tail = s[:helper_end], s[helper_end:]
+          tail = tail.replace('XLSX.writeFile(workbook, fileName);', 'await saveWorkbookFile(workbook, fileName);')
+          tail = tail.replace('XLSX.writeFile(workbook, name);', 'await saveWorkbookFile(workbook, name);')
+          s = head + tail
           p.write_text(s, encoding='utf-8')
 
-          # PDF: html2pdf.js download is also unreliable inside Android WebView.
           p = Path('src/utils/pdfUtils.ts')
           s = p.read_text(encoding='utf-8')
           if "@capacitor/share" not in s:
               s = s.replace("import { isNativePlatform } from './nativeFilesystem';", "import { isNativePlatform } from './nativeFilesystem';\nimport { Filesystem, Directory } from '@capacitor/filesystem';\nimport { Share } from '@capacitor/share';\nimport { Capacitor } from '@capacitor/core';")
-          old = """    await html2pdf().set(opt).from(element).save();\n    return true;"""
-          new = """    if (Capacitor.isNativePlatform()) {\n      const worker = html2pdf().set(opt).from(element);\n      const dataUri = await worker.outputPdf('datauristring');\n      const base64 = String(dataUri).split(',')[1] || '';\n      const result = await Filesystem.writeFile({\n        path: pdfFileName,\n        data: base64,\n        directory: Directory.Cache\n      });\n      await Share.share({\n        title: pdfFileName,\n        text: 'تقرير PDF من تطبيق راما جارد',\n        url: result.uri,\n        dialogTitle: 'حفظ أو مشاركة التقرير'\n      });\n    } else {\n      await html2pdf().set(opt).from(element).save();\n    }\n    return true;"""
+          old = "    await html2pdf().set(opt).from(element).save();\n    return true;"
+          new = """    if (Capacitor.isNativePlatform()) {\n      const worker = html2pdf().set(opt).from(element);\n      const dataUri = await worker.outputPdf('datauristring');\n      const base64 = String(dataUri).split(',')[1] || '';\n      const result = await Filesystem.writeFile({ path: pdfFileName, data: base64, directory: Directory.Cache });\n      await Share.share({ title: pdfFileName, text: 'تقرير PDF من تطبيق راما جارد', url: result.uri, dialogTitle: 'حفظ أو مشاركة التقرير' });\n    } else {\n      await html2pdf().set(opt).from(element).save();\n    }\n    return true;"""
           if old in s:
               s = s.replace(old, new)
           p.write_text(s, encoding='utf-8')
-          print('Android Excel/PDF export patch applied')
           PY
-
       - name: Build Web Assets
         run: npm run build
-
       - name: Init Capacitor
-        run: |
-          npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
-
+        run: npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
       - name: Generate clean Android project
         run: |
           rm -rf android
           npx cap add android
           npx cap sync android
-
       - name: Ensure camera permissions in generated Android manifest
         run: |
           python3 - <<'PY'
@@ -103,13 +91,11 @@ jobs:
               s = s.replace(camera, camera + feature + autofocus)
           p.write_text(s, encoding='utf-8')
           PY
-
       - name: Build Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
