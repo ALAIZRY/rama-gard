@@ -23,15 +23,57 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci || npm install
-          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/share @capacitor/filesystem
-      - name: Stabilize Android camera scanner
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/share @capacitor/filesystem @capacitor/barcode-scanner@3.1.1
+      - name: Use native Android barcode scanner
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('src/components/CameraBarcodeScanner.tsx')
           s = p.read_text(encoding='utf-8')
+
+          native_import = "import { CapacitorBarcodeScanner, CapacitorBarcodeScannerTypeHint } from '@capacitor/barcode-scanner';\n"
+          if "from '@capacitor/barcode-scanner'" not in s:
+              s = s.replace("import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';\n", "import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';\n" + native_import)
+
           s = s.replace("}, [isOpen, selectedDeviceId]);", "}, [isOpen]);")
-          s = s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;", "const hasNativeBarcodeDetector = 'BarcodeDetector' in window && !(window as any).Capacitor;")
+
+          marker = "  const startCamera = async () => {\n    setError(null);\n    setIsScanning(true);\n    isScanningRef.current = true;\n"
+          native_block = """  const startCamera = async () => {
+    setError(null);
+    setIsScanning(true);
+    isScanningRef.current = true;
+
+    // Android: use the native Capacitor scanner. This bypasses Android WebView
+    // camera decoding completely and lets the native scanner handle autofocus,
+    // camera frames and barcode decoding.
+    if ((window as any).Capacitor?.isNativePlatform?.()) {
+      try {
+        const result = await CapacitorBarcodeScanner.scanBarcode({
+          hint: CapacitorBarcodeScannerTypeHint.ALL,
+          scanInstructions: 'وجّه الكاميرا نحو الباركود',
+          scanButton: false,
+          scanText: 'مسح',
+          cameraDirection: 1,
+          android: { scanningLibrary: 'zxing' },
+        });
+
+        if (result?.ScanResult) {
+          handleBarcodeSuccess(result.ScanResult);
+        }
+      } catch (nativeError) {
+        console.warn('Native barcode scanner closed or failed:', nativeError);
+      } finally {
+        isScanningRef.current = false;
+        setIsScanning(false);
+      }
+      return;
+    }
+"""
+          if marker in s and "use the native Capacitor scanner" not in s:
+              s = s.replace(marker, native_block)
+
+          # Never use the browser BarcodeDetector inside Capacitor Android.
+          s = s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;", "const hasNativeBarcodeDetector = 'BarcodeDetector' in window && !(window as any).Capacitor?.isNativePlatform?.();")
           p.write_text(s, encoding='utf-8')
           PY
       - name: Fix Android export and print handlers
@@ -49,7 +91,6 @@ jobs:
           s = s.replace('export const exportItemsToExcel = (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {', 'export const exportItemsToExcel = async (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {')
           s = s.replace('export const exportAuditSessionToExcel = (session: AuditSession, fileName?: string) => {', 'export const exportAuditSessionToExcel = async (session: AuditSession, fileName?: string) => {')
           s = s.replace('export const exportAllSessionsToExcel = (sessions: AuditSession[], fileName?: string) => {', 'export const exportAllSessionsToExcel = async (sessions: AuditSession[], fileName?: string) => {')
-          # Replace only the original export calls, not the helper fallback.
           helper_end = s.find('};', s.find('const saveWorkbookFile = async'))
           head, tail = s[:helper_end], s[helper_end:]
           tail = tail.replace('XLSX.writeFile(workbook, fileName);', 'await saveWorkbookFile(workbook, fileName);')
@@ -62,7 +103,16 @@ jobs:
           if "@capacitor/share" not in s:
               s = s.replace("import { isNativePlatform } from './nativeFilesystem';", "import { isNativePlatform } from './nativeFilesystem';\nimport { Filesystem, Directory } from '@capacitor/filesystem';\nimport { Share } from '@capacitor/share';\nimport { Capacitor } from '@capacitor/core';")
           old = "    await html2pdf().set(opt).from(element).save();\n    return true;"
-          new = """    if (Capacitor.isNativePlatform()) {\n      const worker = html2pdf().set(opt).from(element);\n      const dataUri = await worker.outputPdf('datauristring');\n      const base64 = String(dataUri).split(',')[1] || '';\n      const result = await Filesystem.writeFile({ path: pdfFileName, data: base64, directory: Directory.Cache });\n      await Share.share({ title: pdfFileName, text: 'تقرير PDF من تطبيق راما جارد', url: result.uri, dialogTitle: 'حفظ أو مشاركة التقرير' });\n    } else {\n      await html2pdf().set(opt).from(element).save();\n    }\n    return true;"""
+          new = """    if (Capacitor.isNativePlatform()) {
+      const worker = html2pdf().set(opt).from(element);
+      const dataUri = await worker.outputPdf('datauristring');
+      const base64 = String(dataUri).split(',')[1] || '';
+      const result = await Filesystem.writeFile({ path: pdfFileName, data: base64, directory: Directory.Cache });
+      await Share.share({ title: pdfFileName, text: 'تقرير PDF من تطبيق راما جارد', url: result.uri, dialogTitle: 'حفظ أو مشاركة التقرير' });
+    } else {
+      await html2pdf().set(opt).from(element).save();
+    }
+    return true;"""
           if old in s:
               s = s.replace(old, new)
           p.write_text(s, encoding='utf-8')
@@ -99,6 +149,6 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rama-gard-app
+          name: rama-gard-native-scanner
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
