@@ -1,0 +1,73 @@
+name: Build Android APK - Barcode Scanner V4
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Install dependencies
+        run: |
+          npm ci || npm install
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/share @capacitor/filesystem @zxing/browser@0.2.1 @zxing/library@^0.23.0
+      - name: Replace barcode scanner with modern ZXing browser engine
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/components/CameraBarcodeScanner.tsx')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace("import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';", "import { BrowserMultiFormatReader } from '@zxing/browser';\nimport { DecodeHintType, BarcodeFormat } from '@zxing/library';")
+          s=s.replace('}, [isOpen, selectedDeviceId]);','}, [isOpen]);')
+          start=s.index('  // Initialize ZXing Reader')
+          end=s.index('  const startCamera = async () => {', start)
+          new_reader='''  // Modern ZXing browser reader. The old @zxing/library browser loop is deprecated.\n  // @zxing/browser handles video playback and continuous scan timing more reliably on Android WebView.\n  const createConfiguredReader = (): BrowserMultiFormatReader => {\n    const hints = new Map<DecodeHintType, any>();\n    hints.set(DecodeHintType.POSSIBLE_FORMATS, [\n      BarcodeFormat.EAN_13,\n      BarcodeFormat.EAN_8,\n      BarcodeFormat.UPC_A,\n      BarcodeFormat.UPC_E,\n      BarcodeFormat.CODE_128,\n      BarcodeFormat.CODE_39,\n      BarcodeFormat.CODE_93,\n      BarcodeFormat.ITF,\n      BarcodeFormat.QR_CODE\n    ]);\n    hints.set(DecodeHintType.TRY_HARDER, true);\n\n    return new BrowserMultiFormatReader(hints, {\n      delayBetweenScanAttempts: 300,\n      delayBetweenScanSuccess: 800,\n      tryPlayVideoTimeout: 8000\n    });\n  };\n\n'''
+          s=s[:start]+new_reader+s[end:]
+          start=s.index('        // 5. High-Speed Detection Engine Selection')
+          end=s.index('      }\n    } catch (err: any) {', start)
+          engine='''        // Android WebView: use the modern ZXing browser scanner on the existing stream.\n        if (!codeReaderRef.current) {\n          codeReaderRef.current = createConfiguredReader();\n        }\n        const codeReader = codeReaderRef.current;\n        const video = videoRef.current;\n        if (isScanningRef.current && video) {\n          try {\n            video.setAttribute('playsinline', 'true');\n            video.setAttribute('webkit-playsinline', 'true');\n            video.muted = true;\n            video.autoplay = true;\n            await video.play().catch(() => {});\n\n            const controls = await codeReader.decodeFromVideoElement(video, (result) => {\n              if (!isScanningRef.current || !result) return;\n              const text = result.getText();\n              if (text) handleBarcodeSuccess(text);\n            });\n\n            if (!isScanningRef.current) {\n              controls?.stop?.();\n            }\n          } catch (decodeErr) {\n            console.error('Modern ZXing scanner failed:', decodeErr);\n            setError('تم تشغيل الكاميرا، لكن قارئ الباركود لم يبدأ. اضغط إعادة المحاولة.');\n          }\n        }\n'''
+          s=s[:start]+engine+s[end:]
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Validate TypeScript build source
+        run: npm run build
+      - name: Init Capacitor
+        run: npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
+      - name: Generate clean Android project
+        run: |
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+      - name: Add camera permissions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('android/app/src/main/AndroidManifest.xml')
+          s=p.read_text(encoding='utf-8')
+          marker='<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+          additions='    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n'
+          if 'android.permission.CAMERA' not in s:
+              s=s.replace(marker, marker+additions)
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rama-gard-v4
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
