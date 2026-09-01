@@ -31,20 +31,42 @@ jobs:
       - name: Build Web Assets
         run: npm run build
 
-      - name: Init and Add Capacitor Android
+      - name: Init Capacitor
         run: |
           npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
-          npx cap add android || true
+
+      - name: Generate clean Android project
+        run: |
+          rm -rf android
+          npx cap add android
           npx cap sync android
+
+      - name: Ensure camera permissions in generated Android manifest
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('android/app/src/main/AndroidManifest.xml')
+          s = p.read_text(encoding='utf-8')
+          camera = '    <uses-permission android:name="android.permission.CAMERA" />\n'
+          feature = '    <uses-feature android:name="android.hardware.camera.any" android:required="false" />\n'
+          autofocus = '    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />\n'
+          if 'android.permission.CAMERA' not in s:
+              s = s.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n' + camera)
+          if 'android.hardware.camera.any' not in s:
+              s = s.replace(camera, camera + feature + autofocus)
+          p.write_text(s, encoding='utf-8')
+          print(p.read_text(encoding='utf-8'))
+          PY
 
       - name: Build Android APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: rama-gard-app
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
