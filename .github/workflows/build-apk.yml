@@ -30,22 +30,17 @@ jobs:
           from pathlib import Path
           p = Path('src/components/CameraBarcodeScanner.tsx')
           s = p.read_text(encoding='utf-8')
-
           native_import = "import { CapacitorBarcodeScanner, CapacitorBarcodeScannerTypeHint } from '@capacitor/barcode-scanner';\n"
           if "from '@capacitor/barcode-scanner'" not in s:
               s = s.replace("import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';\n", "import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';\n" + native_import)
-
           s = s.replace("}, [isOpen, selectedDeviceId]);", "}, [isOpen]);")
-
           marker = "  const startCamera = async () => {\n    setError(null);\n    setIsScanning(true);\n    isScanningRef.current = true;\n"
           native_block = """  const startCamera = async () => {
     setError(null);
     setIsScanning(true);
     isScanningRef.current = true;
 
-    // Android: use the native Capacitor scanner. This bypasses Android WebView
-    // camera decoding completely and lets the native scanner handle autofocus,
-    // camera frames and barcode decoding.
+    // Android: use the native Capacitor scanner instead of WebView decoding.
     if ((window as any).Capacitor?.isNativePlatform?.()) {
       try {
         const result = await CapacitorBarcodeScanner.scanBarcode({
@@ -56,10 +51,7 @@ jobs:
           cameraDirection: 1,
           android: { scanningLibrary: 'zxing' },
         });
-
-        if (result?.ScanResult) {
-          handleBarcodeSuccess(result.ScanResult);
-        }
+        if (result?.ScanResult) handleBarcodeSuccess(result.ScanResult);
       } catch (nativeError) {
         console.warn('Native barcode scanner closed or failed:', nativeError);
       } finally {
@@ -71,8 +63,6 @@ jobs:
 """
           if marker in s and "use the native Capacitor scanner" not in s:
               s = s.replace(marker, native_block)
-
-          # Never use the browser BarcodeDetector inside Capacitor Android.
           s = s.replace("const hasNativeBarcodeDetector = 'BarcodeDetector' in window;", "const hasNativeBarcodeDetector = 'BarcodeDetector' in window && !(window as any).Capacitor?.isNativePlatform?.();")
           p.write_text(s, encoding='utf-8')
           PY
@@ -91,11 +81,13 @@ jobs:
           s = s.replace('export const exportItemsToExcel = (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {', 'export const exportItemsToExcel = async (items: Item[], fileName = \'قائمة_الأصناف.xlsx\') => {')
           s = s.replace('export const exportAuditSessionToExcel = (session: AuditSession, fileName?: string) => {', 'export const exportAuditSessionToExcel = async (session: AuditSession, fileName?: string) => {')
           s = s.replace('export const exportAllSessionsToExcel = (sessions: AuditSession[], fileName?: string) => {', 'export const exportAllSessionsToExcel = async (sessions: AuditSession[], fileName?: string) => {')
-          helper_end = s.find('};', s.find('const saveWorkbookFile = async'))
-          head, tail = s[:helper_end], s[helper_end:]
-          tail = tail.replace('XLSX.writeFile(workbook, fileName);', 'await saveWorkbookFile(workbook, fileName);')
-          tail = tail.replace('XLSX.writeFile(workbook, name);', 'await saveWorkbookFile(workbook, name);')
-          s = head + tail
+          first = s.find('const saveWorkbookFile = async')
+          end = s.find('};', first)
+          if first >= 0 and end >= 0:
+              head, tail = s[:end+2], s[end+2:]
+              tail = tail.replace('XLSX.writeFile(workbook, fileName);', 'await saveWorkbookFile(workbook, fileName);')
+              tail = tail.replace('XLSX.writeFile(workbook, name);', 'await saveWorkbookFile(workbook, name);')
+              s = head + tail
           p.write_text(s, encoding='utf-8')
 
           p = Path('src/utils/pdfUtils.ts')
@@ -113,12 +105,13 @@ jobs:
       await html2pdf().set(opt).from(element).save();
     }
     return true;"""
-          if old in s:
-              s = s.replace(old, new)
+          if old in s: s = s.replace(old, new)
           p.write_text(s, encoding='utf-8')
           PY
       - name: Build Web Assets
         run: npm run build
+      - name: TypeScript check
+        run: npm run lint
       - name: Init Capacitor
         run: npx cap init "Rama Gard" "com.ramagard.app" --web-dir dist || true
       - name: Generate clean Android project
